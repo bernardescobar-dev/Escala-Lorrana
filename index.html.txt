@@ -1,0 +1,190 @@
+<script>
+  const dayMillis = 24 * 60 * 60 * 1000;
+  const STORAGE_KEY = 'escalaNotes';
+
+  function getTomorrow() {
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+    return tomorrow;
+  }
+
+  function getShiftStatus(dayIndex) {
+    const cycleLength = 8;
+    const pos = dayIndex % cycleLength;
+    return pos < 2 ? "off" : "on"; // off = folga, on = trabalho
+  }
+
+  function loadNotes() {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveNote(dayOffset, text) {
+    const notes = loadNotes();
+    if (text.trim()) {
+      notes[dayOffset] = text;
+    } else {
+      delete notes[dayOffset];
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+  }
+
+  function generateICS(startDate, months) {
+    const notes = loadNotes();
+    const endDate = new Date(startDate);
+    endDate.setMonth(endDate.getMonth() + months);
+
+    let ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Escala Esposa//EN',
+      'CALSCALE:GREGORIAN'
+    ];
+
+    let dayOffset = 0;
+    let current = new Date(startDate);
+    while (current <= endDate) {
+      const status = getShiftStatus(dayOffset); // off ou on
+      const eventStart = new Date(current.getTime());
+      const eventEnd = new Date(current.getTime() + dayMillis - 1000); // até 23:59
+
+      const dtstamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+      const dtstart = eventStart.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+      const dtend = eventEnd.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+
+      const isOff = status === 'off';
+      const summary = isOff ? 'Folga da Esposa' : 'Trabalho da Esposa';
+      const baseDesc = isOff ? 'Dia de folga.' : 'Dia de trabalho.';
+      const note = notes[dayOffset] ? ` Anotação: ${notes[dayOffset]}` : '';
+      const description = baseDesc + note;
+
+      ics.push(
+        'BEGIN:VEVENT',
+        `UID:escala-${status}-${dayOffset}@escala`,
+        `DTSTAMP:${dtstamp}`,
+        `DTSTART:${dtstart}`,
+        `DTEND:${dtend}`,
+        `SUMMARY:${summary}`,
+        `DESCRIPTION:${description}`,
+        'END:VEVENT'
+      );
+
+      current.setDate(current.getDate() + 1);
+      dayOffset++;
+    }
+
+    ics.push('END:VCALENDAR');
+    return ics.join('\n');
+  }
+
+  function generateSchedule(startDate, months) {
+    const calContainer = document.getElementById('calendarContainer');
+    calContainer.innerHTML = '';
+    const notes = loadNotes();
+
+    const endDate = new Date(startDate);
+    endDate.setMonth(endDate.getMonth() + months);
+
+    let current = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
+
+    const weekDays = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
+    while (current < endDate) {
+      const year = current.getFullYear();
+      const month = current.getMonth();
+
+      const monthWrapper = document.createElement('div');
+      monthWrapper.className = 'calendar-month';
+
+      const monthTitle = document.createElement('h2');
+      monthTitle.textContent = current.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+      monthWrapper.appendChild(monthTitle);
+
+      const grid = document.createElement('div');
+      grid.className = 'calendar';
+
+      weekDays.forEach(d => {
+        const header = document.createElement('div');
+        header.className = 'day-header';
+        header.textContent = d;
+        grid.appendChild(header);
+      });
+
+      const firstWeekDay = new Date(year, month, 1).getDay();
+      for (let i = 0; i < firstWeekDay; i++) {
+        const emptyCell = document.createElement('div');
+        emptyCell.className = 'day-cell';
+        grid.appendChild(emptyCell);
+      }
+
+      let d = new Date(year, month, 1);
+      while (d.getMonth() === month && d < endDate) {
+        const cell = document.createElement('div');
+        cell.className = 'day-cell';
+
+        const diffDays = Math.floor((d - startDate) / dayMillis);
+        if (diffDays >= 0) {
+          const status = getShiftStatus(diffDays);
+          cell.classList.add(status);
+          cell.innerHTML = '<strong>' + d.getDate() + '</strong>' +
+                           (status === 'off' ? 'Folga' : 'Trabalho');
+
+          if (status === 'off') {
+            const noteInput = document.createElement('input');
+            noteInput.type = 'text';
+            noteInput.className = 'note-input';
+            noteInput.placeholder = 'Anotação...';
+            noteInput.value = notes[diffDays] || '';
+            noteInput.addEventListener('input', function() {
+              saveNote(diffDays, this.value);
+            });
+            cell.appendChild(noteInput);
+          }
+        } else {
+          cell.innerHTML = '<strong>' + d.getDate() + '</strong>';
+        }
+
+        grid.appendChild(cell);
+        d = new Date(d.getTime() + dayMillis);
+      }
+
+      monthWrapper.appendChild(grid);
+      calContainer.appendChild(monthWrapper);
+
+      current.setMonth(current.getMonth() + 1);
+      current.setDate(1);
+    }
+  }
+
+  const startDate = getTomorrow();
+  const info = document.getElementById('info');
+  info.textContent = 'Primeiro dia de FOLGA: ' + startDate.toLocaleDateString('pt-BR');
+
+  const monthsSelect = document.getElementById('months');
+  document.getElementById('generateBtn').addEventListener('click', function () {
+    const months = parseInt(monthsSelect.value, 10);
+    generateSchedule(startDate, months);
+  });
+
+  document.getElementById('exportBtn').addEventListener('click', function () {
+    const months = parseInt(monthsSelect.value, 10);
+    const icsContent = generateICS(startDate, months);
+    const icsBlob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(icsBlob);
+
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `escala-esposa-${startDate.toISOString().split('T')[0]}.ics`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  });
+
+  generateSchedule(startDate, parseInt(monthsSelect.value, 10));
+</script>
